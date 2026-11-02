@@ -1,6 +1,6 @@
 /* Service worker: เก็บไฟล์แอปไว้ในเครื่องให้เปิดได้ตอนออฟไลน์
    เปลี่ยนเลข VERSION ทุกครั้งที่แก้ index.html เพื่อให้เครื่องดึงของใหม่ */
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'tcs-app-' + VERSION;
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 

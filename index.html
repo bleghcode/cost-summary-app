@@ -165,6 +165,19 @@
             .grand { font-size: 1.125rem; }
         }
 
+        select.search { width: 100%; }
+        .di-lt { display: flex; gap: 6px; align-items: center; min-width: 0; }
+        .st { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+        .st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .st-Draft { color: #6b7280; background: #f3f4f6; }
+        .st-Sent { color: #1d4ed8; background: #dbeafe; }
+        .st-Confirmed { color: #15803d; background: #dcfce7; }
+        .st-Completed { color: #6d28d9; background: #ede9fe; }
+        .st-Cancelled { color: #b91c1c; background: #fee2e2; }
+        .status-select { font: inherit; font-size: .75rem; border: 1px solid #d1d5db; border-radius: 6px; padding: 1px 6px; background: #fff; color: #374151; cursor: pointer; }
+        .status-select:focus { outline: 2px solid rgba(201,139,21,.4); }
+        .ref-warn { color: #b91c1c; font-size: .7rem; text-align: right; margin-top: .125rem; }
+        .ref-warn[hidden] { display: none; }
         .nights { font-size: .75rem; font-weight: 500; color: var(--faint); margin-left: .5rem; white-space: nowrap; }
         .item-row input.row-type { color: #6b7280; }
 
@@ -234,9 +247,12 @@
     <!-- ===== รายการเอกสาร ===== -->
     <aside class="sidebar no-print" id="sidebar">
         <div class="sb-head">
-            <div class="sb-title">ใบ Cost Summary</div>
+            <div class="sb-title">Cost Summary</div>
             <button class="btn btn-primary btn-block" onclick="newDoc()">+ ใบใหม่</button>
             <input type="search" id="search" class="search" placeholder="ค้นหา Ref / ชื่อลูกค้า" oninput="renderList()">
+            <select id="status-filter" class="search" onchange="renderList()">
+                <option value="">All status</option><option>Draft</option><option>Sent</option><option>Confirmed</option><option>Completed</option><option>Cancelled</option>
+            </select>
         </div>
         <div class="doc-list" id="doc-list"></div>
         <div class="sb-foot">
@@ -245,6 +261,7 @@
             <button class="btn btn-ghost btn-block" onclick="document.getElementById('import-file').click()">นำเข้าจากไฟล์สำรอง</button>
             <input type="file" id="import-file" accept=".json,application/json" hidden onchange="importFile(this)">
             <div class="sb-note" id="backup-note"></div>
+            <div class="sb-note" id="app-version"></div>
         </div>
     </aside>
     <div class="backdrop no-print" id="backdrop" onclick="toggleSidebar(false)"></div>
@@ -277,6 +294,13 @@
                     <div class="meta-row">
                         <span class="lbl">Ref:</span>
                         <input type="text" class="w-32 text-right" id="ref-input">
+                    </div>
+                    <div class="ref-warn no-print" id="ref-warn" hidden>⚠ Ref ซ้ำกับอีกเอกสาร</div>
+                    <div class="meta-row no-print">
+                        <span class="lbl">Status:</span>
+                        <select id="status-select" class="status-select">
+                            <option>Draft</option><option>Sent</option><option>Confirmed</option><option>Completed</option><option>Cancelled</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -384,6 +408,8 @@ const KEY_DOCS = 'tcs:v1:docs';
 const KEY_CUR = 'tcs:v1:current';
 const KEY_BACKUP = 'tcs:v1:lastBackup';
 const KEY_MASTER = 'tcs:v1:master';
+const APP_VERSION = '1.6.0';
+const STATUSES = ['Draft', 'Sent', 'Confirmed', 'Completed', 'Cancelled'];
 const SECTIONS = ['sec-acc', 'sec-tour', 'sec-trans', 'sec-other'];
 const PLACEHOLDER = {
     'sec-acc': 'Accommodation Description (e.g., Season Siam Hotel)',
@@ -400,6 +426,9 @@ let curCreatedAt = 0;
 let loading = false;    // ระหว่างโหลดใบเข้าฟอร์ม ห้ามบันทึกซ้ำ
 let storageOk = true;
 let saveTimer = null;
+let dirty = false;      // มีการแก้ไขที่ยังไม่ได้บันทึกในหน้านี้
+let loadedAt = 0;       // updatedAt ของใบนี้ตอนเปิด/บันทึกล่าสุด (ไว้ตรวจว่าอีกหน้าต่างแก้ไปแล้วหรือไม่)
+let lastSize = 0, sizeWarned = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -421,7 +450,9 @@ function readStore() {
 }
 function writeStore(obj) {
     try {
-        localStorage.setItem(KEY_DOCS, JSON.stringify(obj));
+        const str = JSON.stringify(obj);
+        localStorage.setItem(KEY_DOCS, str);
+        lastSize = str.length;
         storageOk = true;
         return true;
     } catch (e) {
@@ -514,9 +545,20 @@ function addRow(secId, desc, amt, type) {
     if (!loading) scheduleSave();
 }
 function removeRow(el) {
-    el.closest('tr').remove();
+    const tr = el.closest('tr'), tb = tr.closest('tbody'), secId = tb.id;
+    const desc = tr.querySelector('[data-ac="name"]').value, amt = tr.querySelector('.auto-calc').value;
+    const typeEl = tr.querySelector('.row-type'), type = typeEl ? typeEl.value : '';
+    const next = tr.nextElementSibling;
+    tr.remove();
     calculate();
     scheduleSave();
+    if (desc || amt || type) {
+        toast('ลบแถวแล้ว', 'ย้อนกลับ', () => {
+            tb.insertBefore(makeRow(secId, desc, amt, false, type), (next && next.parentNode === tb) ? next : tb.querySelector('.subtotal-row'));
+            calculate();
+            scheduleSave();
+        });
+    }
 }
 
 /* ============ เก็บค่าจากฟอร์ม / ใส่ค่าลงฟอร์ม ============ */
@@ -538,6 +580,7 @@ function collect() {
         date: $('current-date').value,
         ref: $('ref-input').value,
         customer: $('customer-name-input').value,
+        status: $('status-select').value,
         travel: [...document.querySelectorAll('.date-box')].map((b) => b.value),
         adults: $('adults-input').value,
         children: $('children-input').value,
@@ -555,6 +598,7 @@ function populate(d) {
     $('current-date').value = d.date || '';
     $('ref-input').value = d.ref || '';
     $('customer-name-input').value = d.customer || '';
+    $('status-select').value = STATUSES.includes(d.status) ? d.status : 'Draft';
     document.querySelectorAll('.date-box').forEach((b, i) => { b.value = (d.travel && d.travel[i]) || ''; });
     $('adults-input').value = d.adults || '';
     $('children-input').value = d.children || '';
@@ -570,7 +614,10 @@ function populate(d) {
     fitCompanyName();
     updateFileTitle();
     loading = false;
+    dirty = false;
+    loadedAt = d.updatedAt || 0;
     try { localStorage.setItem(KEY_CUR, curId); } catch (e) {}
+    checkRefDup();
     renderList();
 }
 
@@ -580,7 +627,7 @@ function blankDoc() {
         id: newId(), createdAt: Date.now(), updatedAt: Date.now(),
         company: DEFAULT_COMPANY, address: DEFAULT_ADDRESS,
         date: t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-        ref: nextRef(), customer: '', travel: ['', '', '', '', String(t.getFullYear())],
+        ref: nextRef(), customer: '', status: 'Draft', travel: ['', '', '', '', String(t.getFullYear())],
         adults: '', children: '', infants: '',
         sections: { 'sec-acc': [{ d: '', a: '' }], 'sec-tour': [{ d: '', a: '' }], 'sec-trans': [{ d: '', a: '' }], 'sec-other': [{ d: '', a: '' }] }
     };
@@ -600,7 +647,16 @@ function nextRef() {
 function isBlank(d) {
     if (!d) return false;
     if ((d.customer || '').trim()) return false;
-    return Object.values(d.sections || {}).every((rows) => rows.every((r) => !(r.d || '').trim() && !(r.a || '').trim()));
+    const tr = d.travel || [];
+    if ([0, 1, 2, 3].some((i) => (tr[i] || '').trim())) return false;
+    if ((d.adults || '').trim() || (d.children || '').trim() || (d.infants || '').trim()) return false;
+    if (d.status && d.status !== 'Draft') return false;
+    return Object.values(d.sections || {}).every((rows) => rows.every((r) => !(r.d || '').trim() && !(r.a || '').trim() && !(r.t || '').trim()));
+}
+function checkRefDup() {
+    const ref = $('ref-input').value.trim().toLowerCase();
+    const dup = ref && Object.values(docs).some((d) => d.id !== curId && String(d.ref || '').trim().toLowerCase() === ref);
+    $('ref-warn').hidden = !dup;
 }
 function sumDoc(d) {
     let c = 0;
@@ -611,18 +667,38 @@ function sumDoc(d) {
 /* ============ บันทึกอัตโนมัติ ============ */
 function scheduleSave() {
     if (loading || !curId) return;
+    dirty = true;
     setStatus('กำลังบันทึก…');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, 350);
 }
 function saveNow() {
     clearTimeout(saveTimer);
-    if (loading || !curId) return;
+    if (loading || !curId || !dirty) return;   // ไม่มีการแก้ไขในหน้านี้ ห้ามเขียนทับของที่อาจใหม่กว่า
     const d = collect();
+    let note = '';
+    // อีกหน้าต่างแก้ใบนี้ไปแล้วหลังจากที่หน้านี้เปิดมา → ไม่เขียนทับ เก็บของหน้านี้เป็นสำเนาใหม่แทน
+    const stored = readStore()[curId];
+    if (stored && (stored.updatedAt || 0) > loadedAt) {
+        docs = readStore();
+        d.id = newId();
+        d.createdAt = d.updatedAt = Date.now();
+        d.ref = nextRef();
+        d.customer = (d.customer ? d.customer + ' ' : '') + '(กู้คืน)';
+        curId = d.id; curCreatedAt = d.createdAt;
+        $('ref-input').value = d.ref;
+        $('customer-name-input').value = d.customer;
+        try { localStorage.setItem(KEY_CUR, curId); } catch (e) {}
+        note = 'ใบนี้ถูกแก้จากอีกหน้าต่างไปแล้ว จึงเก็บข้อมูลหน้านี้เป็นสำเนาใหม่ ' + d.ref;
+        updateFileTitle();
+    }
     const ok = mutate((s) => { s[d.id] = d; });
-    if (ok) setStatus('บันทึกอัตโนมัติแล้ว ' + new Date().toLocaleTimeString('en-GB'));
+    if (ok) { dirty = false; loadedAt = d.updatedAt; setStatus('บันทึกอัตโนมัติแล้ว ' + new Date().toLocaleTimeString('en-GB')); }
     else setStatus('บันทึกลงเครื่องไม่ได้!', true);
+    if (note) toast(note);
+    else if (ok && lastSize > 3500000 && !sizeWarned) { sizeWarned = true; toast('ที่เก็บข้อมูลในเบราว์เซอร์ใกล้เต็ม กรุณาสำรองข้อมูลแล้วลบใบเก่าที่ไม่ใช้'); }
     $('storage-banner').hidden = ok;
+    checkRefDup();
     renderList();
     if (ok && navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
 }
@@ -665,6 +741,7 @@ function duplicateDoc(id) {
     copy.id = newId();
     copy.createdAt = copy.updatedAt = Date.now();
     copy.ref = nextRef();
+    copy.status = 'Draft';
     copy.date = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     mutate((s) => { s[copy.id] = copy; });
     populate(copy);
@@ -698,7 +775,8 @@ function renderList() {
     const box = $('doc-list');
     const q = ($('search').value || '').trim().toLowerCase();
     box.textContent = '';
-    const list = sortedDocs().filter((d) => !q || ((d.ref || '') + ' ' + (d.customer || '')).toLowerCase().includes(q));
+    const sf = $('status-filter').value;
+    const list = sortedDocs().filter((d) => (!q || ((d.ref || '') + ' ' + (d.customer || '')).toLowerCase().includes(q)) && (!sf || (STATUSES.includes(d.status) ? d.status : 'Draft') === sf));
     if (!list.length) {
         const e = document.createElement('div');
         e.className = 'list-empty';
@@ -713,7 +791,10 @@ function renderList() {
         const top = document.createElement('div'); top.className = 'di-top';
         const ref = document.createElement('span'); ref.className = 'di-ref'; ref.textContent = d.ref || '(ไม่มี Ref)';
         const tot = document.createElement('span'); tot.className = 'di-total'; tot.textContent = formatNumber(sumDoc(d));
-        top.append(ref, tot);
+        const sv = STATUSES.includes(d.status) ? d.status : 'Draft';
+        const st = document.createElement('span'); st.className = 'st st-' + sv; st.textContent = sv;
+        const lt = document.createElement('span'); lt.className = 'di-lt'; lt.append(ref, st);
+        top.append(lt, tot);
 
         const nm = document.createElement('div');
         nm.className = 'di-name' + ((d.customer || '').trim() ? '' : ' empty');
@@ -790,7 +871,7 @@ function normalizeDoc(x) {
         id: str(x.id) || newId(),
         createdAt: Number(x.createdAt) || Date.now(),
         updatedAt: Number(x.updatedAt) || Date.now(),
-        company: str(x.company), address: str(x.address), date: str(x.date), ref: str(x.ref), customer: str(x.customer),
+        company: str(x.company), address: str(x.address), date: str(x.date), ref: str(x.ref), customer: str(x.customer), status: STATUSES.includes(x.status) ? x.status : 'Draft',
         travel: Array.isArray(x.travel) ? x.travel.slice(0, 5).map(str) : [],
         adults: str(x.adults), children: str(x.children), infants: str(x.infants),
         sections: {}
@@ -1095,6 +1176,9 @@ companyInput.addEventListener('input', () => {
     fitCompanyName();
 });
 ['ref-input', 'customer-name-input', 'current-date'].forEach((id) => $(id).addEventListener('input', updateFileTitle));
+$('ref-input').addEventListener('input', checkRefDup);
+window.addEventListener('error', (e) => { toast('เกิดข้อผิดพลาด: ' + (e.message || 'ไม่ทราบสาเหตุ') + ' (ข้อมูลที่บันทึกไว้แล้วไม่เสียหาย ลองรีเฟรชหน้า)'); });
+window.addEventListener('unhandledrejection', () => { toast('เกิดข้อผิดพลาดบางอย่าง ข้อมูลที่บันทึกไว้แล้วไม่เสียหาย'); });
 
 const dateBoxes = [...document.querySelectorAll('.date-box')];
 dateBoxes.forEach((box, i) => {
@@ -1121,7 +1205,12 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveN
 window.addEventListener('pagehide', saveNow);
 /* แท็บอื่นแก้ข้อมูล → อัปเดตรายการ */
 window.addEventListener('storage', (e) => {
-    if (e.key === KEY_DOCS) { docs = readStore(); renderList(); }
+    if (e.key === KEY_DOCS) {
+        docs = readStore();
+        const cur = docs[curId];
+        if (cur && !dirty && (cur.updatedAt || 0) > loadedAt) { populate(cur); toast('อัปเดตเอกสารนี้ตามที่แก้จากอีกหน้าต่างแล้ว'); }
+        else renderList();
+    }
     if (e.key === KEY_MASTER) { master = readMaster(); }
 });
 document.addEventListener('keydown', (e) => {
@@ -1132,6 +1221,7 @@ document.addEventListener('keydown', (e) => {
 (function init() {
     docs = readStore();
     master = readMaster();
+    $('app-version').textContent = 'Cost Summary v' + APP_VERSION;
     $('storage-banner').hidden = storageOk;
     let id = null;
     try { id = localStorage.getItem(KEY_CUR); } catch (e) {}
